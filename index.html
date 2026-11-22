@@ -1,0 +1,183 @@
+﻿<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>テレプロンプター</title>
+<style>
+* { box-sizing: border-box; }
+:root { color-scheme: dark; font-family: system-ui, sans-serif; color: #f5f5f5; background: #111; }
+body { margin: 0 auto; max-width: 1200px; padding: clamp(12px, 3vw, 32px); }
+h1 { font-size: 1.65rem; margin: 0 0 16px; }
+label, button { font-weight: 600; }
+textarea { display: block; width: 100%; min-height: 105px; margin: 8px 0 0; resize: vertical; padding: 12px; background: #181818; color: inherit; border: 1px solid #646464; border-radius: 8px; font: inherit; }
+.note { color: #c6c6c6; font-size: .875rem; margin: 8px 0 14px; }
+#player { display: grid; gap: 12px; align-content: start; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+button { font: inherit; font-weight: 600; padding: 7px 13px; background: #252525; color: inherit; border: 1px solid #686868; border-radius: 7px; cursor: pointer; }
+button:disabled { opacity: .48; cursor: default; }
+#start { background: #fafafa; color: #111; }
+.slider { display: grid; gap: 2px; min-width: 150px; flex: 1; font-size: .875rem; }
+input { accent-color: #eee; }
+:focus-visible { outline: 2px solid #8ed7ff; outline-offset: 3px; }
+#stage { position: relative; overflow: hidden; height: clamp(240px, 52vh, 640px); background: #000; border: 1px solid #555; border-radius: 10px; }
+#stage::after { content: ""; position: absolute; top: 40%; left: 0; right: 0; border-top: 2px solid #8ed7ff; box-shadow: 0 0 0 1px #000; pointer-events: none; }
+#script { position: absolute; top: 0; left: 0; width: 100%; padding: 0 clamp(18px, 6vw, 90px); margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; font-size: 56px; color: #fff; }
+#player:fullscreen { grid-template-rows: auto minmax(0, 1fr) auto; background: #000; padding: 12px; }
+#player:fullscreen #stage { height: auto; }
+#status { margin: 0; }
+</style>
+</head>
+<body>
+<h1>テレプロンプター</h1>
+<label for="draft">原稿</label>
+<textarea id="draft" placeholder="ここに原稿を貼り付けてください" spellcheck="false"></textarea>
+<p id="storage" class="note" role="status">原稿はこのブラウザ内に自動保存されます。</p>
+<section id="player" aria-label="原稿の再生">
+  <div class="controls">
+    <div class="buttons">
+      <button id="start" type="button">スタート</button>
+      <button id="pause" type="button">一時停止</button>
+      <button id="reset" type="button">先頭に戻す</button>
+      <button id="fullscreen" type="button">全画面表示</button>
+    </div>
+    <label class="slider" for="speed"><span>速度 <output id="speed-value" for="speed"></output></span><input id="speed" type="range" min="10" max="300" value="60"></label>
+    <label class="slider" for="size"><span>文字サイズ <output id="size-value" for="size"></output></span><input id="size" type="range" min="24" max="128" value="56"></label>
+    <label><input id="mirror" type="checkbox"> ミラー</label>
+  </div>
+  <div id="stage" aria-label="原稿表示"><p id="script"></p></div>
+  <p id="status" class="note" role="status">スペースキーで再生・一時停止できます（原稿入力中を除く）。</p>
+</section>
+<script>
+'use strict';
+const byId = id => document.getElementById(id);
+const draft = byId('draft');
+const player = byId('player');
+const stage = byId('stage');
+const script = byId('script');
+const startButton = byId('start');
+const pauseButton = byId('pause');
+const speed = byId('speed');
+const size = byId('size');
+const mirror = byId('mirror');
+const fullscreen = byId('fullscreen');
+const status = byId('status');
+const storageKey = 'teleprompter.draft.v1';
+const storageError = 'このブラウザでは原稿を保存できません。ページを閉じる前に原稿をコピーしてください。';
+
+let mode = 'ready';
+let distance = 0;
+let frameId = 0;
+let lastTime = null;
+
+function render() {
+  const offset = mode === 'ready' ? 16 : stage.clientHeight - distance;
+  script.style.transform = 'translateY(' + offset + 'px)' + (mirror.checked ? ' scaleX(-1)' : '');
+}
+
+function updateButtons() {
+  startButton.disabled = !draft.value.trim() || mode === 'playing';
+  pauseButton.disabled = mode !== 'playing';
+}
+
+function stop(nextMode, message) {
+  cancelAnimationFrame(frameId);
+  lastTime = null;
+  mode = nextMode;
+  if (message) status.textContent = message;
+  updateButtons();
+}
+
+function reset() {
+  stop('ready', '先頭に戻りました。スペースキーでも再生できます。');
+  distance = 0;
+  render();
+}
+
+function tick(now) {
+  if (lastTime !== null) distance += Number(speed.value) * Math.min(now - lastTime, 100) / 1000;
+  lastTime = now;
+  render();
+  if (distance >= stage.clientHeight + script.offsetHeight) {
+    stop('finished', '原稿の最後まで再生しました。');
+    return;
+  }
+  frameId = requestAnimationFrame(tick);
+}
+
+function start() {
+  if (startButton.disabled) return;
+  if (mode !== 'paused') distance = 0;
+  mode = 'playing';
+  status.textContent = '再生中';
+  updateButtons();
+  render();
+  frameId = requestAnimationFrame(tick);
+}
+
+function pause() {
+  if (mode === 'playing') stop('paused', '一時停止中');
+}
+
+function updateSettings() {
+  byId('speed-value').textContent = speed.value + ' px/秒';
+  byId('size-value').textContent = size.value + ' px';
+  script.style.fontSize = size.value + 'px';
+  render();
+}
+
+try {
+  draft.value = localStorage.getItem(storageKey) ?? '';
+} catch {
+  byId('storage').textContent = storageError;
+}
+script.textContent = draft.value;
+updateButtons();
+updateSettings();
+
+draft.addEventListener('input', () => {
+  script.textContent = draft.value;
+  reset();
+  try {
+    if (draft.value) localStorage.setItem(storageKey, draft.value);
+    else localStorage.removeItem(storageKey);
+    byId('storage').textContent = '原稿はこのブラウザ内に自動保存されます。';
+  } catch {
+    byId('storage').textContent = storageError;
+  }
+});
+
+startButton.addEventListener('click', start);
+pauseButton.addEventListener('click', pause);
+byId('reset').addEventListener('click', reset);
+speed.addEventListener('input', updateSettings);
+size.addEventListener('input', updateSettings);
+mirror.addEventListener('change', render);
+new ResizeObserver(render).observe(stage);
+
+fullscreen.addEventListener('click', async () => {
+  try {
+    if (document.fullscreenElement === player) await document.exitFullscreen();
+    else await player.requestFullscreen();
+  } catch {
+    status.textContent = 'このブラウザでは全画面に切り替えられませんでした。';
+  }
+});
+document.addEventListener('fullscreenchange', () => {
+  fullscreen.textContent = document.fullscreenElement === player ? '全画面を終了' : '全画面表示';
+  render();
+});
+
+document.addEventListener('keydown', event => {
+  if (event.code !== 'Space' || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.target.closest('textarea, input, [contenteditable]')) return;
+  event.preventDefault();
+  if (event.repeat) return;
+  if (mode === 'playing') pause();
+  else start();
+});
+</script>
+</body>
+</html>
